@@ -1,7 +1,7 @@
 const express = require('express');
 const axios = require('axios');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
-require('dotenv').config(); 
+require('dotenv').config();
 
 
 const app = express();
@@ -14,22 +14,63 @@ if (!GEMINI_API_KEY || !LINKEDIN_ACCESS_TOKEN) {
   throw new Error("Missing API keys in .env file. Please check your GEMINI_API_KEY and LINKEDIN_ACCESS_TOKEN.");
 }
 
-
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: "gemini-pro" });
+// THE FIX IS HERE: Updated model name
+const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest" });
+
+app.use(express.json());
+app.use(express.static('public'));
+
+app.get('/auth/linkedin', (req, res) => {
+  const authURL = `https://www.linkedin.com/oauth/v2/authorization?response_type=code&client_id=${process.env.LINKEDIN_CLIENT_ID}&redirect_uri=${process.env.REDIRECT_URI}&scope=w_member_social`;
+  res.redirect(authURL);
+ 
+});
+
+app.get('/auth/linkedin/callback', async (req, res) => {
+  const code = req.query.code;
+
+  try {
+    const tokenResponse = await axios.post('https://www.linkedin.com/oauth/v2/accessToken', null, {
+      params: {
+        grant_type: 'authorization_code',
+        code,
+        redirect_uri: process.env.REDIRECT_URI,
+        client_id: process.env.LINKEDIN_CLIENT_ID,
+        client_secret: process.env.LINKEDIN_CLIENT_SECRET
+      }
+    });
+
+    const accessToken = tokenResponse.data.access_token;
+
+    console.log("✅ Access Token:", accessToken);
+    res.send(`Your LinkedIn Access Token: <br><code>${accessToken}</code><br>Paste this into your .env file as LINKEDIN_ACCESS_TOKEN`);
+  } catch (error) {
+    console.error("❌ Failed to get token:", error.response?.data || error.message);
+    res.status(500).send("Failed to retrieve access token.");
+  }
+});
 
 
-app.use(express.json()); 
-app.use(express.static('public')); 
+
+
+
 
 
 
 async function generateContentWithGemini(title) {
   try {
     const prompt = `Write a professional and engaging LinkedIn post based on this title: "${title}". Include relevant hashtags. The post should be concise and impactful.`;
+
+    // This part of your code is slightly outdated for the latest SDK version.
+    // The `generateContent` method now directly accepts the prompt string.
+    // While your old code might still work for now, this is the modern way.
     const result = await model.generateContent(prompt);
     const response = await result.response;
-    return response.text();
+    const text = response.text();
+    
+    return text;
+
   } catch (error) {
     console.error("Error generating content with Gemini:", error);
     throw new Error("Failed to generate content from Gemini.");
@@ -38,13 +79,11 @@ async function generateContentWithGemini(title) {
 
 async function postToLinkedIn(content) {
   try {
-    
     const meResponse = await axios.get('https://api.linkedin.com/v2/me', {
       headers: { 'Authorization': `Bearer ${LINKEDIN_ACCESS_TOKEN}` }
     });
     const authorUrn = meResponse.data.id;
 
-    
     const postPayload = {
       author: `urn:li:person:${authorUrn}`,
       lifecycleState: 'PUBLISHED',
@@ -67,7 +106,7 @@ async function postToLinkedIn(content) {
       {
         headers: {
           'Authorization': `Bearer ${LINKEDIN_ACCESS_TOKEN}`,
-          'X-Restli-Protocol-Version': '2.0.0', 
+          'X-Restli-Protocol-Version': '2.0.0',
           'Content-Type': 'application/json'
         }
       }
@@ -77,13 +116,10 @@ async function postToLinkedIn(content) {
     return postResponse.data;
 
   } catch (error) {
-    
     console.error("Error posting to LinkedIn:", error.response ? error.response.data : error.message);
     throw new Error(error.response?.data?.message || "Failed to post to LinkedIn.");
   }
 }
-
-
 
 app.post('/api/generate-and-post', async (req, res) => {
   const { title } = req.body;
@@ -91,28 +127,25 @@ app.post('/api/generate-and-post', async (req, res) => {
   if (!title) {
     return res.status(400).json({ error: 'Title is required' });
   }
-
+ 
   console.log(`Received request to post with title: "${title}"`);
+  console.log(process.env.LINKEDIN_CLIENT_SECRET)
 
   try {
-   
     console.log("Generating content...");
     const contentToPost = await generateContentWithGemini(title);
+    console.log(contentToPost);
 
-    
     console.log("Posting to LinkedIn...");
     const linkedInResult = await postToLinkedIn(contentToPost);
 
     res.status(200).json({ success: true, message: 'Successfully posted to LinkedIn!', data: linkedInResult });
 
   } catch (error) {
-
     console.error("Workflow failed:", error.message);
     res.status(500).json({ success: false, error: error.message });
   }
 });
-
-
 
 app.listen(PORT, () => {
   console.log(`Server is running on http://localhost:${PORT}`);
